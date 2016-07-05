@@ -1,8 +1,14 @@
 package cexio
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -22,7 +28,7 @@ type API struct {
 	Logger *log.Logger
 
 	//Messages channel which is used for reading responses from API
-	Messages chan []byte
+	Messages chan response
 }
 
 var apiURL = "wss://ws.cex.io/ws"
@@ -35,7 +41,7 @@ func NewAPI(key string, secret string) *API {
 		Secret:   secret,
 		Dialer:   websocket.DefaultDialer,
 		Logger:   log.New(os.Stderr, "", log.LstdFlags),
-		Messages: make(chan []byte),
+		Messages: make(chan response),
 	}
 
 	return api
@@ -78,6 +84,39 @@ func (a *API) reader() {
 			return
 		}
 
-		a.Messages <- msg
+		r := response{}
+
+		err = json.Unmarshal(msg, &r)
+
+		a.Messages <- r
 	}
+}
+
+func (a *API) Auth() error {
+
+	timestamp := time.Now().Unix()
+
+	s := fmt.Sprintf("%d%s", timestamp, a.Key)
+
+	h := hmac.New(sha256.New, []byte(a.Secret))
+	h.Write([]byte(s))
+
+	signature := hex.EncodeToString(h.Sum(nil))
+
+	request := requestAuthAction{
+		E: "auth",
+		Auth: requestAuthData{
+			Key:       a.Key,
+			Signature: signature,
+			Timestamp: timestamp,
+		},
+	}
+
+	// send auth message to API server
+	err := a.conn.WriteJSON(request)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
