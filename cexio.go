@@ -88,8 +88,6 @@ func (a *API) Close() error {
 func (a *API) responseCollector() {
 	defer a.Close()
 
-	//todo: handle websocket connection close from server
-
 	resp := responseAction{}
 
 	for {
@@ -107,6 +105,11 @@ func (a *API) responseCollector() {
 		if resp.Action == "ping" {
 			a.pong()
 			continue
+		}
+
+		if resp.Action == "disconnecting" {
+			a.Logger.Println(string(msg))
+			break
 		}
 
 		sub, err := a.subscriber(resp.Action)
