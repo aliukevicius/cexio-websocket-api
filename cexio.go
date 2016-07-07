@@ -136,7 +136,7 @@ func (a *API) auth() error {
 	request := requestAuthAction{
 		E: action,
 		Auth: requestAuthData{
-			Key:       a.Key + "-",
+			Key:       a.Key,
 			Signature: signature,
 			Timestamp: timestamp,
 		},
