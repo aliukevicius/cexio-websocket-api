@@ -27,3 +27,7 @@ type responseAuthData struct {
 	Error string `json:"error"`
 	OK    string `json:"ok"`
 }
+
+type requestPong struct {
+	E string `json:"e"`
+}

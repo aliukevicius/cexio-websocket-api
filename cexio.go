@@ -104,6 +104,11 @@ func (a *API) responseCollector() {
 			a.Logger.Println(err)
 		}
 
+		if resp.Action == "ping" {
+			a.pong()
+			continue
+		}
+
 		sub, err := a.subscriber(resp.Action)
 		if err != nil {
 			a.Logger.Printf("No response handler for message: %s", string(msg))
@@ -163,6 +168,16 @@ func (a *API) auth() error {
 	}
 
 	return nil
+}
+
+func (a *API) pong() {
+
+	msg := requestPong{"pong"}
+
+	err := a.conn.WriteJSON(msg)
+	if err != nil {
+		a.Logger.Printf("Error while sending Pong message: %s", err)
+	}
 }
 
 func (a *API) subscribe(action string) chan subscriberType {
