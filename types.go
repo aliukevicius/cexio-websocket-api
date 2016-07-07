@@ -31,3 +31,23 @@ type responseAuthData struct {
 type requestPong struct {
 	E string `json:"e"`
 }
+
+type requestTicker struct {
+	E    string   `json:"e"`
+	Data []string `json:"data"`
+	Oid  string   `json:"oid"`
+}
+
+type responseTicker struct {
+	E    string             `json:"e"`
+	Data responseTickerData `json:"data"`
+	OK   string             `json:"ok"`
+	Oid  string             `json:"oid"`
+}
+
+type responseTickerData struct {
+	Bid   float64  `json:"bid"`
+	Ask   float64  `json:"ask"`
+	Pair  []string `json:"pair"`
+	Error string   `json:"error"`
+}

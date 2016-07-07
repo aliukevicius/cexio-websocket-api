@@ -85,6 +85,44 @@ func (a *API) Close() error {
 	return nil
 }
 
+//Ticker send ticker request
+func (a *API) Ticker(currencyCode1 string, currencyCode2 string) (*responseTicker, error) {
+
+	action := "ticker"
+
+	sub := a.subscribe(action)
+	defer a.unsubscribe(action)
+
+	timestamp := time.Now().UnixNano()
+
+	msg := requestTicker{
+		E:    action,
+		Data: []string{currencyCode1, currencyCode2},
+		Oid:  fmt.Sprintf("%d_%s-%s", timestamp, currencyCode1, currencyCode2),
+	}
+
+	err := a.conn.WriteJSON(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	// wait for response from sever
+	respMsg := <-sub
+
+	resp := &responseTicker{}
+	err = json.Unmarshal(respMsg, resp)
+	if err != nil {
+		return nil, err
+	}
+
+	// check if authentication was successfull
+	if resp.OK != "ok" {
+		return nil, errors.New(resp.Data.Error)
+	}
+
+	return resp, nil
+}
+
 func (a *API) responseCollector() {
 	defer a.Close()
 
