@@ -1,6 +1,6 @@
 package cexio
 
-type subscriberType []byte
+type subscriberType interface{}
 
 type requestAuthAction struct {
 	E    string          `json:"e"`
@@ -50,4 +50,73 @@ type responseTickerData struct {
 	Ask   float64  `json:"ask"`
 	Pair  []string `json:"pair"`
 	Error string   `json:"error"`
+}
+
+type requestOrderBookSubscribe struct {
+	E    string                        `json:"e"`
+	Data requestOrderBookSubscribeData `json:"data"`
+	Oid  string                        `json:"oid"`
+}
+
+type requestOrderBookSubscribeData struct {
+	Pair      []string `json:"pair"`
+	Subscribe bool     `json:"subscribe"`
+	Depth     int64    `json:"depth"`
+}
+
+type responseOrderBookSubscribe struct {
+	E    string                         `json:"e"`
+	Data responseOrderBookSubscribeData `json:"data"`
+	OK   string                         `json:"ok"`
+	Oid  string                         `json:"oid"`
+}
+
+type responseOrderBookSubscribeData struct {
+	Timestamp int64       `json:"timestamp"`
+	Bids      [][]float64 `json:"bids"`
+	Asks      [][]float64 `json:"asks"`
+	Pair      string      `json:"pair"`
+	ID        int64       `json:"id"`
+}
+
+type responseOrderBookUpdate struct {
+	E    string                      `json:"e"`
+	Data responseOrderBookUpdateData `json:"data"`
+}
+
+type responseOrderBookUpdateData struct {
+	ID        int64       `json:"id"`
+	Pair      string      `json:"pair"`
+	Timestamp int64       `json:"time"`
+	Bids      [][]float64 `json:"bids"`
+	Asks      [][]float64 `json:"asks"`
+}
+
+//OrderBookUpdate data of order book update
+type OrderBookUpdateData struct {
+	ID        int64
+	Pair      string
+	Timestamp int64
+	Bids      [][]float64
+	Asks      [][]float64
+}
+
+type subscriptionHandler func(updateData OrderBookUpdateData)
+
+type orderBookPair struct {
+	Pair  []string `json:"pair"`
+	Error string   `json:"error,omitempty"`
+}
+
+type requestOrderBookUnsubscribe struct {
+	E    string        `json:"e"`
+	Data orderBookPair `json:"data"`
+	Oid  string        `json:"oid"`
+}
+
+type responseOrderBookUnsubscribe struct {
+	E    string        `json:"e"`
+	Data orderBookPair `json:"data"`
+	OK   string        `json:"ok"`
+	Oid  string        `json:"oid"`
 }

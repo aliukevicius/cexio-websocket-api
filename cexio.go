@@ -25,6 +25,7 @@ type API struct {
 	conn                *websocket.Conn
 	responseSubscribers map[string]chan subscriberType
 	subscriberMutex     sync.Mutex
+	orderBookHandlers   map[string]chan bool
 
 	//Dialer used to connect to WebSocket server
 	Dialer *websocket.Dialer
@@ -44,6 +45,7 @@ func NewAPI(key string, secret string) *API {
 		Logger:              log.New(os.Stderr, "", log.LstdFlags),
 		responseSubscribers: map[string]chan subscriberType{},
 		subscriberMutex:     sync.Mutex{},
+		orderBookHandlers:   map[string]chan bool{},
 	}
 
 	return api
@@ -86,7 +88,7 @@ func (a *API) Close() error {
 }
 
 //Ticker send ticker request
-func (a *API) Ticker(currencyCode1 string, currencyCode2 string) (*responseTicker, error) {
+func (a *API) Ticker(cCode1 string, cCode2 string) (*responseTicker, error) {
 
 	action := "ticker"
 
@@ -97,8 +99,8 @@ func (a *API) Ticker(currencyCode1 string, currencyCode2 string) (*responseTicke
 
 	msg := requestTicker{
 		E:    action,
-		Data: []string{currencyCode1, currencyCode2},
-		Oid:  fmt.Sprintf("%d_%s-%s", timestamp, currencyCode1, currencyCode2),
+		Data: []string{cCode1, cCode2},
+		Oid:  fmt.Sprintf("%d_%s:%s", timestamp, cCode1, cCode2),
 	}
 
 	err := a.conn.WriteJSON(msg)
@@ -107,7 +109,7 @@ func (a *API) Ticker(currencyCode1 string, currencyCode2 string) (*responseTicke
 	}
 
 	// wait for response from sever
-	respMsg := <-sub
+	respMsg := (<-sub).([]byte)
 
 	resp := &responseTicker{}
 	err = json.Unmarshal(respMsg, resp)
@@ -123,10 +125,134 @@ func (a *API) Ticker(currencyCode1 string, currencyCode2 string) (*responseTicke
 	return resp, nil
 }
 
+//OrderBookSubscribe subscribes to order book updates.
+//Order book snapshot will come as a first update
+func (a *API) OrderBookSubscribe(cCode1 string, cCode2 string, depth int64, handler subscriptionHandler) error {
+
+	action := "order-book-subscribe"
+
+	subscriptionIdentifier := fmt.Sprintf("%s_%s:%s", action, cCode1, cCode2)
+
+	a.subscribe(subscriptionIdentifier)
+
+	timestamp := time.Now().UnixNano()
+
+	req := requestOrderBookSubscribe{
+		E:   action,
+		Oid: fmt.Sprintf("%d_%s:%s", timestamp, cCode1, cCode2),
+		Data: requestOrderBookSubscribeData{
+			Pair:      []string{cCode1, cCode2},
+			Subscribe: true,
+			Depth:     depth,
+		},
+	}
+
+	err := a.conn.WriteJSON(req)
+	if err != nil {
+		return err
+	}
+
+	go a.handleOrderBookSubscriptions(subscriptionIdentifier, handler)
+
+	return nil
+}
+
+func (a *API) handleOrderBookSubscriptions(subscriptionIdentifier string, handler subscriptionHandler) {
+
+	quit := make(chan bool)
+
+	a.orderBookHandlers[subscriptionIdentifier] = quit
+
+	sub, err := a.subscriber(subscriptionIdentifier)
+	if err != nil {
+		a.Logger.Println(err)
+		return
+	}
+
+	for {
+		select {
+		case <-quit:
+			return
+		case m := <-sub:
+
+			obData := OrderBookUpdateData{}
+
+			if resp, ok := m.(*responseOrderBookSubscribe); ok {
+
+				obData = OrderBookUpdateData{
+					ID:        resp.Data.ID,
+					Pair:      resp.Data.Pair,
+					Timestamp: resp.Data.Timestamp,
+					Bids:      resp.Data.Bids,
+					Asks:      resp.Data.Asks,
+				}
+			}
+
+			if resp, ok := m.(*responseOrderBookUpdate); ok {
+
+				obData = OrderBookUpdateData{
+					ID:        resp.Data.ID,
+					Pair:      resp.Data.Pair,
+					Timestamp: resp.Data.Timestamp,
+					Bids:      resp.Data.Bids,
+					Asks:      resp.Data.Asks,
+				}
+			}
+
+			handler(obData)
+		}
+	}
+}
+
+//OrderBookUnsubscribe unsubscribes from order book updates
+func (a *API) OrderBookUnsubscribe(cCode1 string, cCode2 string) error {
+
+	action := "order-book-unsubscribe"
+
+	sub := a.subscribe(action)
+	defer a.unsubscribe(action)
+
+	timestamp := time.Now().UnixNano()
+
+	req := requestOrderBookUnsubscribe{
+		E:   action,
+		Oid: fmt.Sprintf("%d_%s:%s", timestamp, cCode1, cCode2),
+		Data: orderBookPair{
+			Pair: []string{cCode1, cCode2},
+		},
+	}
+
+	err := a.conn.WriteJSON(req)
+	if err != nil {
+		return err
+	}
+
+	msg := (<-sub).([]byte)
+
+	resp := &responseOrderBookUnsubscribe{}
+
+	err = json.Unmarshal(msg, resp)
+	if err != nil {
+		return err
+	}
+
+	if resp.OK != "ok" {
+		return errors.New(resp.Data.Error)
+	}
+
+	handlerIdentifier := fmt.Sprintf("order-book-subscribe_%s:%s", cCode1, cCode2)
+
+	// stop processing book messages
+	a.orderBookHandlers[handlerIdentifier] <- true
+	delete(a.orderBookHandlers, handlerIdentifier)
+
+	return nil
+}
+
 func (a *API) responseCollector() {
 	defer a.Close()
 
-	resp := responseAction{}
+	resp := &responseAction{}
 
 	for {
 		_, msg, err := a.conn.ReadMessage()
@@ -135,10 +261,13 @@ func (a *API) responseCollector() {
 			return
 		}
 
-		err = json.Unmarshal(msg, &resp)
+		err = json.Unmarshal(msg, resp)
 		if err != nil {
-			a.Logger.Println(err)
+			a.Logger.Printf("responseCollector: %s\nData: %s\n", err, string(msg))
+			continue
 		}
+
+		subscriberIdentifier := resp.Action
 
 		if resp.Action == "ping" {
 			a.pong()
@@ -150,7 +279,48 @@ func (a *API) responseCollector() {
 			break
 		}
 
-		sub, err := a.subscriber(resp.Action)
+		if resp.Action == "order-book-subscribe" {
+			ob := &responseOrderBookSubscribe{}
+			err = json.Unmarshal(msg, ob)
+			if err != nil {
+				a.Logger.Printf("responseCollector | order-book-subscribe: %s\nData: %s\n", err, string(msg))
+				continue
+			}
+
+			subscriberIdentifier = fmt.Sprintf("order-book-subscribe_%s", ob.Data.Pair)
+
+			sub, err := a.subscriber(subscriberIdentifier)
+			if err != nil {
+				a.Logger.Printf("No response handler for message: %s", string(msg))
+				continue // don't know how to handle message so just skip it
+			}
+
+			sub <- ob
+			continue
+		}
+
+		if resp.Action == "md_update" {
+
+			ob := &responseOrderBookUpdate{}
+			err = json.Unmarshal(msg, ob)
+			if err != nil {
+				a.Logger.Printf("responseCollector | md_update: %s\nData: %s\n", err, string(msg))
+				continue
+			}
+
+			subscriberIdentifier = fmt.Sprintf("order-book-subscribe_%s", ob.Data.Pair)
+
+			sub, err := a.subscriber(subscriberIdentifier)
+			if err != nil {
+				a.Logger.Printf("No response handler for message: %s", string(msg))
+				continue // don't know how to handle message so just skip it
+			}
+
+			sub <- ob
+			continue
+		}
+
+		sub, err := a.subscriber(subscriberIdentifier)
 		if err != nil {
 			a.Logger.Printf("No response handler for message: %s", string(msg))
 			continue // don't know how to handle message so just skip it
@@ -195,7 +365,7 @@ func (a *API) auth() error {
 	}
 
 	// wait for auth response from sever
-	respMsg := <-sub
+	respMsg := (<-sub).([]byte)
 
 	resp := &responseAuth{}
 	err = json.Unmarshal(respMsg, resp)
