@@ -26,11 +26,15 @@ type API struct {
 	responseSubscribers map[string]chan subscriberType
 	subscriberMutex     sync.Mutex
 	orderBookHandlers   map[string]chan bool
+	stopDataCollector   bool
 
 	//Dialer used to connect to WebSocket server
 	Dialer *websocket.Dialer
 	//Logger used for error logging
 	Logger *log.Logger
+
+	//ReceiveDone send message after Close() initiation
+	ReceiveDone chan bool
 }
 
 var apiURL = "wss://ws.cex.io/ws"
@@ -46,6 +50,8 @@ func NewAPI(key string, secret string) *API {
 		responseSubscribers: map[string]chan subscriberType{},
 		subscriberMutex:     sync.Mutex{},
 		orderBookHandlers:   map[string]chan bool{},
+		stopDataCollector:   false,
+		ReceiveDone:         make(chan bool),
 	}
 
 	return api
@@ -79,10 +85,17 @@ func (a *API) Connect() error {
 
 //Close closes API connection
 func (a *API) Close() error {
+
+	a.stopDataCollector = true
+
 	err := a.conn.Close()
 	if err != nil {
 		return err
 	}
+
+	go func() {
+		a.ReceiveDone <- true
+	}()
 
 	return nil
 }
@@ -127,7 +140,7 @@ func (a *API) Ticker(cCode1 string, cCode2 string) (*responseTicker, error) {
 
 //OrderBookSubscribe subscribes to order book updates.
 //Order book snapshot will come as a first update
-func (a *API) OrderBookSubscribe(cCode1 string, cCode2 string, depth int64, handler subscriptionHandler) error {
+func (a *API) OrderBookSubscribe(cCode1 string, cCode2 string, depth int64, handler SubscriptionHandler) error {
 
 	action := "order-book-subscribe"
 
@@ -157,7 +170,7 @@ func (a *API) OrderBookSubscribe(cCode1 string, cCode2 string, depth int64, hand
 	return nil
 }
 
-func (a *API) handleOrderBookSubscriptions(subscriptionIdentifier string, handler subscriptionHandler) {
+func (a *API) handleOrderBookSubscriptions(subscriptionIdentifier string, handler SubscriptionHandler) {
 
 	quit := make(chan bool)
 
@@ -252,9 +265,11 @@ func (a *API) OrderBookUnsubscribe(cCode1 string, cCode2 string) error {
 func (a *API) responseCollector() {
 	defer a.Close()
 
+	a.stopDataCollector = false
+
 	resp := &responseAction{}
 
-	for {
+	for a.stopDataCollector == false {
 		_, msg, err := a.conn.ReadMessage()
 		if err != nil {
 			a.Logger.Println(err)

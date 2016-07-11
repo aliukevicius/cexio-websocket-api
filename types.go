@@ -92,7 +92,7 @@ type responseOrderBookUpdateData struct {
 	Asks      [][]float64 `json:"asks"`
 }
 
-//OrderBookUpdate data of order book update
+//OrderBookUpdateData data of order book update
 type OrderBookUpdateData struct {
 	ID        int64
 	Pair      string
@@ -101,7 +101,8 @@ type OrderBookUpdateData struct {
 	Asks      [][]float64
 }
 
-type subscriptionHandler func(updateData OrderBookUpdateData)
+//SubscriptionHandler subscription update handler type
+type SubscriptionHandler func(updateData OrderBookUpdateData)
 
 type orderBookPair struct {
 	Pair  []string `json:"pair"`
