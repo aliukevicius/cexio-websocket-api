@@ -140,13 +140,16 @@ func (a *API) Ticker(cCode1 string, cCode2 string) (*responseTicker, error) {
 
 //OrderBookSubscribe subscribes to order book updates.
 //Order book snapshot will come as a first update
-func (a *API) OrderBookSubscribe(cCode1 string, cCode2 string, depth int64, handler SubscriptionHandler) error {
+func (a *API) OrderBookSubscribe(cCode1 string, cCode2 string, depth int64, handler SubscriptionHandler) (int64, error) {
 
 	action := "order-book-subscribe"
 
-	subscriptionIdentifier := fmt.Sprintf("%s_%s:%s", action, cCode1, cCode2)
+	currencyPair := fmt.Sprintf("%s:%s", cCode1, cCode2)
 
-	a.subscribe(subscriptionIdentifier)
+	subscriptionIdentifier := fmt.Sprintf("%s_%s", action, currencyPair)
+
+	sub := a.subscribe(subscriptionIdentifier)
+	defer a.unsubscribe(subscriptionIdentifier)
 
 	timestamp := time.Now().UnixNano()
 
@@ -162,19 +165,34 @@ func (a *API) OrderBookSubscribe(cCode1 string, cCode2 string, depth int64, hand
 
 	err := a.conn.WriteJSON(req)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
-	go a.handleOrderBookSubscriptions(subscriptionIdentifier, handler)
+	bookSnapshot := (<-sub).(*responseOrderBookSubscribe)
 
-	return nil
+	go a.handleOrderBookSubscriptions(bookSnapshot, currencyPair, handler)
+
+	return bookSnapshot.Data.ID, nil
 }
 
-func (a *API) handleOrderBookSubscriptions(subscriptionIdentifier string, handler SubscriptionHandler) {
+func (a *API) handleOrderBookSubscriptions(bookSnapshot *responseOrderBookSubscribe, currencyPair string, handler SubscriptionHandler) {
 
 	quit := make(chan bool)
 
+	subscriptionIdentifier := fmt.Sprintf("md_update_%s", currencyPair)
+	a.subscribe(subscriptionIdentifier)
 	a.orderBookHandlers[subscriptionIdentifier] = quit
+
+	obData := OrderBookUpdateData{
+		ID:        bookSnapshot.Data.ID,
+		Pair:      bookSnapshot.Data.Pair,
+		Timestamp: bookSnapshot.Data.Timestamp,
+		Bids:      bookSnapshot.Data.Bids,
+		Asks:      bookSnapshot.Data.Asks,
+	}
+
+	// process order book snapshot items before order book updates
+	go handler(obData)
 
 	sub, err := a.subscriber(subscriptionIdentifier)
 	if err != nil {
@@ -188,31 +206,17 @@ func (a *API) handleOrderBookSubscriptions(subscriptionIdentifier string, handle
 			return
 		case m := <-sub:
 
-			obData := OrderBookUpdateData{}
+			resp := m.(*responseOrderBookUpdate)
 
-			if resp, ok := m.(*responseOrderBookSubscribe); ok {
-
-				obData = OrderBookUpdateData{
-					ID:        resp.Data.ID,
-					Pair:      resp.Data.Pair,
-					Timestamp: resp.Data.Timestamp,
-					Bids:      resp.Data.Bids,
-					Asks:      resp.Data.Asks,
-				}
+			obData := OrderBookUpdateData{
+				ID:        resp.Data.ID,
+				Pair:      resp.Data.Pair,
+				Timestamp: resp.Data.Timestamp,
+				Bids:      resp.Data.Bids,
+				Asks:      resp.Data.Asks,
 			}
 
-			if resp, ok := m.(*responseOrderBookUpdate); ok {
-
-				obData = OrderBookUpdateData{
-					ID:        resp.Data.ID,
-					Pair:      resp.Data.Pair,
-					Timestamp: resp.Data.Timestamp,
-					Bids:      resp.Data.Bids,
-					Asks:      resp.Data.Asks,
-				}
-			}
-
-			handler(obData)
+			go handler(obData)
 		}
 	}
 }
@@ -253,7 +257,7 @@ func (a *API) OrderBookUnsubscribe(cCode1 string, cCode2 string) error {
 		return errors.New(resp.Data.Error)
 	}
 
-	handlerIdentifier := fmt.Sprintf("order-book-subscribe_%s:%s", cCode1, cCode2)
+	handlerIdentifier := fmt.Sprintf("md_update_%s:%s", cCode1, cCode2)
 
 	// stop processing book messages
 	a.orderBookHandlers[handlerIdentifier] <- true
@@ -323,7 +327,7 @@ func (a *API) responseCollector() {
 				continue
 			}
 
-			subscriberIdentifier = fmt.Sprintf("order-book-subscribe_%s", ob.Data.Pair)
+			subscriberIdentifier = fmt.Sprintf("md_update_%s", ob.Data.Pair)
 
 			sub, err := a.subscriber(subscriberIdentifier)
 			if err != nil {
